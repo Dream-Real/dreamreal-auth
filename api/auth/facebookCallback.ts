@@ -1,70 +1,67 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import jwt from "jsonwebtoken";
-import dotenv from "dotenv";
 import fetch from "node-fetch";
 
-dotenv.config();
+// 🔐 Variables d’environnement
+const {
+  FACEBOOK_APP_ID,
+  FACEBOOK_APP_SECRET,
+  FACEBOOK_CALLBACK_URL,
+  SESSION_SECRET,
+  MOBILE_REDIRECT_URI = "dreamreal://auth",
+} = process.env;
 
-const FACEBOOK_APP_ID = process.env.FACEBOOK_APP_ID!;
-const FACEBOOK_APP_SECRET = process.env.FACEBOOK_APP_SECRET!;
-const FACEBOOK_CALLBACK_URL = process.env.FACEBOOK_CALLBACK_URL!;
-const MOBILE_REDIRECT_URI = process.env.MOBILE_REDIRECT_URI!;
-const JWT_SECRET = process.env.SESSION_SECRET!;
-
+// 🚀 Étape 2 — Callback de Facebook après login
 export default async function facebookCallback(req: VercelRequest, res: VercelResponse) {
   try {
-    const { code } = req.query;
-
+    const code = req.query.code as string;
     if (!code) {
-      return res.status(400).json({ error: "Missing Facebook authorization code" });
+      console.error("❌ Aucun code OAuth reçu.");
+      return res.status(400).json({ error: "Missing authorization code" });
     }
 
-    // 1️⃣ Échanger le code contre un access_token
-    const tokenResponse = await fetch(
-      `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${FACEBOOK_APP_ID}&redirect_uri=${FACEBOOK_CALLBACK_URL}&client_secret=${FACEBOOK_APP_SECRET}&code=${code}`
-    );
+    console.log("📩 Code OAuth reçu de Facebook:", code);
 
+    // 1️⃣ Échanger le code contre un access_token Facebook
+    const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${FACEBOOK_APP_ID}&redirect_uri=${FACEBOOK_CALLBACK_URL}&client_secret=${FACEBOOK_APP_SECRET}&code=${code}`;
+    console.log("🔄 Récupération access_token depuis:", tokenUrl);
+
+    const tokenResponse = await fetch(tokenUrl);
     const tokenData: any = await tokenResponse.json();
+    console.log("🔑 Réponse Facebook access_token:", tokenData);
 
     if (!tokenData.access_token) {
-      console.error("❌ Erreur tokenData:", tokenData);
-      return res.status(400).json({ error: "Facebook token retrieval failed" });
+      console.error("❌ Pas d'access_token Facebook:", tokenData);
+      return res.status(400).json({ error: "Facebook login failed", details: tokenData });
     }
 
-    // 2️⃣ Récupérer les infos du profil utilisateur
-    const profileResponse = await fetch(
-      `https://graph.facebook.com/me?fields=id,name,email,picture&access_token=${tokenData.access_token}`
-    );
+    const facebookAccessToken = tokenData.access_token;
 
+    // 2️⃣ Récupérer le profil utilisateur Facebook
+    const profileUrl = `https://graph.facebook.com/me?fields=id,name,email,picture.type(large)&access_token=${facebookAccessToken}`;
+    const profileResponse = await fetch(profileUrl);
     const profileData: any = await profileResponse.json();
 
-    if (!profileData.id) {
-      console.error("❌ Erreur profileData:", profileData);
-      return res.status(400).json({ error: "Facebook profile retrieval failed" });
-    }
+    console.log("👤 Profil Facebook reçu:", profileData);
 
-    // 3️⃣ Créer un JWT avec les infos utilisateur
-    const token = jwt.sign(
-      {
-        user: {
-          id: profileData.id,
-          name: profileData.name,
-          email: profileData.email,
-        },
-      },
-      JWT_SECRET,
-      { expiresIn: "7d" }
-    );
+    // 3️⃣ Créer le token JWT interne
+    const userPayload = {
+      id: profileData.id,
+      name: profileData.name,
+      email: profileData.email ?? "unknown@facebook.com",
+      photo: profileData.picture?.data?.url ?? null,
+    };
 
-    console.log("✅ Facebook user reçu :", profileData);
-    console.log("🔑 Token généré :", token);
+    const token = jwt.sign({ user: userPayload }, SESSION_SECRET!, { expiresIn: "7d" });
 
-    // 4️⃣ Redirection vers l’app mobile
-    const redirectUrl = `${MOBILE_REDIRECT_URI}?token=${token}`;
+    // 4️⃣ Construire l’URL de redirection mobile
+    const redirectUrl = `${MOBILE_REDIRECT_URI}?token=${token}&fb_token=${facebookAccessToken}`;
     console.log("🔁 Redirection vers:", redirectUrl);
+
+    // 🔚 Rediriger l’utilisateur vers l’app mobile (via le schéma `dreamreal://`)
     return res.redirect(redirectUrl);
-  } catch (err) {
-    console.error("❌ Erreur facebookCallback:", err);
-    return res.status(500).json({ error: "Erreur interne callback Facebook" });
+  } catch (error) {
+    console.error("❌ Erreur dans facebookCallback:", error);
+    return res.status(500).json({ error: "Erreur interne OAuth Facebook" });
   }
 }
